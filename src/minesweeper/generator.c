@@ -76,5 +76,6 @@ void free_board(board_t* board) {
     free(board->revealed);
     free(board->flagged);
     if (board->difficulty) free(board->difficulty);
+    if (board->tags) free(board->tags);
     free(board);
 }

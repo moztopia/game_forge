@@ -10,7 +10,8 @@ typedef struct {
     int height;
     int mines;
     int seed;
-    double rating;
+    double score;
+    char* tags;
     int* grid; // Flattened array: -1 for mine, 0-8 for clues
     bool* revealed; // For solver use
     bool* flagged;  // For solver use

@@ -1,19 +1,55 @@
+# Depending on the ease of generating a valid puzzle, the desired count maybe exceeded
+# before the system realizes the goal has been reached. This is working as intended.
+
 game:
+  config:
+    threads: 4
   minesweeper:
-    create:
+    output: "./minesweeper.csv" # default is the game name.
+    append: false # default is false. If false the output file will be deleted before starting.
+    puzzles:
       easy:
-        count: 5
+        count: 500
+        max_time: 120
         size:
-          columns: 9
-          rows: 9
+          columns: 11
+          rows: 22
         mines:
-          minimum: 10
-          maximum: 10
+          minimum: 20
+          maximum: 29
       medium:
-        count: 5
+        count: 200
+        max_time: 120
         size:
-          columns: 16
-          rows: 16
+          columns: 11
+          rows: 22
+        mines:
+          minimum: 30
+          maximum: 39
+      hard:
+        count: 10
+        max_time: 120
+        size:
+          columns: 11
+          rows: 22
         mines:
           minimum: 40
-          maximum: 40
+          maximum: 49
+      expert:
+        count: 3
+        max_time: 12
+        size:
+          columns: 11
+          rows: 22
+        mines:
+          minimum: 50
+          maximum: 54
+      evil:
+        count: 2
+        max_time: 10
+        size:
+          columns: 11
+          rows: 22
+        mines:
+          minimum: 55
+          maximum: 59

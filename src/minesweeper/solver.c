@@ -167,10 +167,68 @@ bool solve_board(board_t* board) {
         // TODO: Implement Tier 2
     }
     
-    board->rating = (double)tier; // Placeholder
-    // Scale rating based on steps or mines
+    // 3BV Calculation
+    // 1. Count connected components of zeros (openings)
+    // 2. Count independent non-opening safe cells
+    
+    int tbv = 0;
+    bool* visited_3bv = calloc(size, sizeof(bool));
+    
+    // Part A: Zeros
+    for (int i = 0; i < size; i++) {
+        if (board->grid[i] == 0 && !visited_3bv[i]) {
+            tbv++;
+            
+            // Flood fill this opening
+            int* q = malloc(size * sizeof(int));
+            int head = 0, tail = 0;
+            
+            q[tail++] = i;
+            visited_3bv[i] = true;
+            
+            // Mark all neighbors of the *start* zero as visited too (they get revealed)
+            // Actually, standard flood fill logic for minesweeper:
+            // Clicking a 0 reveals it and all neighbors.
+            // If a neighbor is 0, it recursively reveals its neighbors.
+            
+            // So we need to traverse the connected 0s.
+            // Any non-0 neighbor of a 0 is also revealed (visited) but does not continue the flood.
+            
+            // Re-use logic:
+            while(head < tail) {
+                int curr = q[head++];
+                
+                int neighbors[8];
+                int n_count;
+                get_neighbors(board, curr, neighbors, &n_count);
+                
+                for(int n=0; n<n_count; n++) {
+                    int idx = neighbors[n];
+                    if (!visited_3bv[idx]) {
+                        visited_3bv[idx] = true; 
+                        // Only add to queue if it's a zero (continue flood)
+                        if (board->grid[idx] == 0) {
+                            q[tail++] = idx;
+                        }
+                    }
+                }
+            }
+            free(q);
+        }
+    }
+    
+    // Part B: Remaining safe cells
+    for (int i = 0; i < size; i++) {
+        if (board->grid[i] != -1 && !visited_3bv[i]) {
+            tbv++;
+        }
+    }
+    
+    free(visited_3bv);
+
+    board->score = (double)tbv;
+    
     if (revealed_count == total_safe) {
-        board->rating = 1.0; // Minimal
         return true;
     }
     
