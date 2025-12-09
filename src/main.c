@@ -113,7 +113,7 @@ void* worker_thread(void* arg) {
     return NULL;
 }
 
-void render_dashboard(int active_diff_idx, diff_stats_t* stats, int count, const char* game_title, int num_threads) {
+void render_dashboard(int active_diff_idx, diff_stats_t* stats, int count, int num_threads) {
     printf("%s", MOVE_TOP);
     printf("  ____                        _____                    \n");
     printf(" / ___| __ _ _ __ ___   ___  |  ___|__  _ __ __ _  ___ \n");
@@ -185,117 +185,151 @@ void render_dashboard(int active_diff_idx, diff_stats_t* stats, int count, const
     printf("\n");
 }
 
+const game_module_t* get_module(const char* name) {
+    if (strcmp(name, "minesweeper") == 0) return &MINESWEEPER_MODULE;
+    return NULL;
+}
+
 int main(int argc, char** argv) {
     (void)argc; (void)argv; // Parsing args later?
     
     signal(SIGINT, handle_sigint);
     srand(time(NULL));
 
-    // Hardcoded module selection for now
-    const game_module_t* engine = &MINESWEEPER_MODULE;
-
     game_config_t* config = load_config("game_forge.yaml");
     if (!config) {
         fprintf(stderr, "Error loading config\n");
         return 1;
     }
-    
     int num_threads = config->threads > 0 ? config->threads : 1;
-    printf("Starting %s with %d threads...\n", engine->game_name, num_threads);
 
-    const char* output_file = config->output_file ? config->output_file : "minesweeper.csv";
-    write_csv_header(output_file, engine->csv_header, config->append);
+    // Flatten stats
+    size_t total_difficulties = 0;
+    for(size_t g=0; g<config->game_count; g++) {
+        total_difficulties += config->games[g].difficulty_count;
+    }
 
     // Init stats
-    diff_stats_t* stats = calloc(config->difficulty_count, sizeof(diff_stats_t));
-    for(size_t i=0; i<config->difficulty_count; i++) {
-        strncpy(stats[i].game_name, engine->game_name, 19); 
-        strncpy(stats[i].name, config->difficulties[i].name, 49);
-        stats[i].target = config->difficulties[i].count;
-        stats[i].status = 0;
-        stats[i].stop_signal = 0;
+    diff_stats_t* stats = calloc(total_difficulties, sizeof(diff_stats_t));
+    size_t offset = 0;
+    for(size_t g=0; g<config->game_count; g++) {
+       local_game_config_t* game_cfg = &config->games[g];
+       const game_module_t* engine = get_module(game_cfg->game_name);
+       // If no engine found, skip or warn? 
+       // For stats display, we can just show the name.
+       const char* game_display_name = engine ? engine->game_name : game_cfg->game_name;
+       
+       for(size_t i=0; i<game_cfg->difficulty_count; i++) {
+           strncpy(stats[offset + i].game_name, game_display_name, 19); 
+           strncpy(stats[offset + i].name, game_cfg->difficulties[i].name, 49);
+           stats[offset + i].target = game_cfg->difficulties[i].count;
+           stats[offset + i].status = 0;
+           stats[offset + i].stop_signal = 0;
+       }
+       offset += game_cfg->difficulty_count;
     }
 
     printf("%s%s", CLEAR_SCREEN, HIDE_CURSOR);
 
-    for (size_t i = 0; i < config->difficulty_count; i++) {
+    int global_diff_idx = 0;
+
+    for (size_t g = 0; g < config->game_count; g++) {
         if (!keep_running) break;
-
-        difficulty_config_t* diff = &config->difficulties[i];
-
-        // Init Module for this difficulty
-        void* mod_ctx = engine->init(diff);
-
-        // Mark start
-        pthread_mutex_lock(&stats_mutex);
-        stats[i].status = 1; 
-        clock_gettime(CLOCK_MONOTONIC, &stats[i].start_time);
-        pthread_mutex_unlock(&stats_mutex);
         
-        // Determine number of threads for this work
-        pthread_t* threads = malloc(num_threads * sizeof(pthread_t));
-        worker_ctx_t* ctx = malloc(num_threads * sizeof(worker_ctx_t));
+        local_game_config_t* game_cfg = &config->games[g];
+        const game_module_t* engine = get_module(game_cfg->game_name);
         
-        for(int t=0; t<num_threads; t++) {
-            ctx[t].diff_config = diff;
-            ctx[t].diff_stats = &stats[i];
-            ctx[t].output_file = output_file;
-            ctx[t].module = engine;
-            ctx[t].module_ctx = mod_ctx; // Shared context logic? 
-                                       // Minesweeper just uses (difficulty_config_t*) as context which is read-only.
-                                       // Safe for threads if only reading.
+        if (!engine) {
+            // Can't run this game
+            // Update stats to failed?
+            // Skip difficulty count
+            global_diff_idx += game_cfg->difficulty_count;
+            fprintf(stderr, "Unknown game module: %s\n", game_cfg->game_name);
+            continue;
+        }
+
+        const char* output_file = game_cfg->output_file ? game_cfg->output_file : "output.csv";
+        write_csv_header(output_file, engine->csv_header, game_cfg->append);
+
+        for(size_t i=0; i<game_cfg->difficulty_count; i++) {
+            if (!keep_running) break;
             
-            pthread_create(&threads[t], NULL, worker_thread, &ctx[t]);
-        }
-        
-        // Main thread becomes dashboard renderer
-        while (keep_running) {
-             pthread_mutex_lock(&stats_mutex);
-             int gen = stats[i].generated;
-             int tar = stats[i].target;
-             pthread_mutex_unlock(&stats_mutex);
-             
-             render_dashboard(i, stats, config->difficulty_count, engine->game_name, num_threads);
-             
-             if (gen >= tar) break;
-             
-             // Check Max Time
-             struct timespec now;
-             clock_gettime(CLOCK_MONOTONIC, &now);
-             double elapsed = get_elapsed_seconds(stats[i].start_time, now);
-             int max_time = get_int_property(diff, "max_time", 0);
-             
-             if (max_time > 0 && elapsed >= max_time) {
+            difficulty_config_t* diff = &game_cfg->difficulties[i];
+
+            // Init Module for this difficulty
+            void* mod_ctx = engine->init(diff);
+
+            // Mark start
+            pthread_mutex_lock(&stats_mutex);
+            stats[global_diff_idx].status = 1; 
+            clock_gettime(CLOCK_MONOTONIC, &stats[global_diff_idx].start_time);
+            pthread_mutex_unlock(&stats_mutex);
+            
+            // Determine number of threads for this work
+            pthread_t* threads = malloc(num_threads * sizeof(pthread_t));
+            worker_ctx_t* ctx = malloc(num_threads * sizeof(worker_ctx_t));
+            
+            for(int t=0; t<num_threads; t++) {
+                ctx[t].diff_config = diff;
+                ctx[t].diff_stats = &stats[global_diff_idx];
+                ctx[t].output_file = output_file;
+                ctx[t].module = engine;
+                ctx[t].module_ctx = mod_ctx; 
+                
+                pthread_create(&threads[t], NULL, worker_thread, &ctx[t]);
+            }
+            
+            // Main thread becomes dashboard renderer
+            while (keep_running) {
                  pthread_mutex_lock(&stats_mutex);
-                 stats[i].stop_signal = 1;
+                 int gen = stats[global_diff_idx].generated;
+                 int tar = stats[global_diff_idx].target;
                  pthread_mutex_unlock(&stats_mutex);
-                 break;
-             }
-
-             struct timespec ts;
-             ts.tv_sec = 0;
-             ts.tv_nsec = 100000000; // 100ms
-             nanosleep(&ts, NULL);
+                 
+                 render_dashboard(global_diff_idx, stats, total_difficulties, num_threads);
+                 
+                 if (gen >= tar) break;
+                 
+                 // Check Max Time
+                 struct timespec now;
+                 clock_gettime(CLOCK_MONOTONIC, &now);
+                 double elapsed = get_elapsed_seconds(stats[global_diff_idx].start_time, now);
+                 int max_time = get_int_property(diff, "max_time", 0);
+                 
+                 if (max_time > 0 && elapsed >= max_time) {
+                     pthread_mutex_lock(&stats_mutex);
+                     stats[global_diff_idx].stop_signal = 1;
+                     pthread_mutex_unlock(&stats_mutex);
+                     break;
+                 }
+    
+                 struct timespec ts;
+                 ts.tv_sec = 0;
+                 ts.tv_nsec = 100000000; // 100ms
+                 nanosleep(&ts, NULL);
+            }
+            
+            // Record end time
+            pthread_mutex_lock(&stats_mutex);
+            clock_gettime(CLOCK_MONOTONIC, &stats[global_diff_idx].end_time);
+            stats[global_diff_idx].status = 2;
+            pthread_mutex_unlock(&stats_mutex);
+    
+            // Join threads
+            for(int t=0; t<num_threads; t++) {
+                pthread_join(threads[t], NULL);
+            }
+            
+            engine->cleanup(mod_ctx);
+            
+            free(threads);
+            free(ctx);
+            
+            // Final render for this difficulty
+            render_dashboard(global_diff_idx, stats, total_difficulties, num_threads);
+            
+            global_diff_idx++;
         }
-        
-        // Record end time
-        pthread_mutex_lock(&stats_mutex);
-        clock_gettime(CLOCK_MONOTONIC, &stats[i].end_time);
-        stats[i].status = 2;
-        pthread_mutex_unlock(&stats_mutex);
-
-        // Join threads
-        for(int t=0; t<num_threads; t++) {
-            pthread_join(threads[t], NULL);
-        }
-        
-        engine->cleanup(mod_ctx);
-        
-        free(threads);
-        free(ctx);
-        
-        // Final render for this difficulty
-        render_dashboard(i, stats, config->difficulty_count, engine->game_name, num_threads);
     }
     
     printf("%s\nDone.\n", SHOW_CURSOR);

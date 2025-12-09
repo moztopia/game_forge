@@ -21,11 +21,19 @@ typedef struct {
 } difficulty_config_t;
 
 typedef struct {
+    char* game_name;
+    char* output_file;
+    int append;
+    
     difficulty_config_t* difficulties;
     size_t difficulty_count;
+} local_game_config_t;
+
+typedef struct {
     int threads;
-    char* output_file;
-    int append; // Use int for bool flag
+    
+    local_game_config_t* games;
+    size_t game_count;
 } game_config_t;
 
 // Function prototypes

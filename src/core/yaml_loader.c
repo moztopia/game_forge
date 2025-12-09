@@ -52,37 +52,34 @@ game_config_t* load_config(const char* path) {
     }
 
     game_config_t* config = calloc(1, sizeof(game_config_t));
-    int diff_cap = 4;
-    config->difficulties = calloc(diff_cap, sizeof(difficulty_config_t));
-    config->difficulty_count = 0;
+    
+    // Game list dynamic array
+    int game_cap = 2;
+    config->games = calloc(game_cap, sizeof(local_game_config_t));
+    config->game_count = 0;
 
     char line[256];
     
     // State
+    local_game_config_t* current_game = NULL;
     difficulty_config_t current_diff = {0};
     
-    int in_create = 0;
-    int in_config = 0; 
+    int state_config = 0; // 1 if inside game.config
+    // We determine context by indent and top-level keys
     
-    // We need to track context for nested keys (e.g. mines.minimum)
-    // Simple state machine:
-    // If we are in difficulty block, any 4-space indent is a property.
-    // Any 6-space indent is a nested property.
-    // Actually, based on previous file:
-    // create: (level 0 or 2?)
-    //   easy: (level 4)
-    //     prop: val (level 6)
-    //     mines: (level 6)
-    //       min: 10 (level 8)
+    // Diff list dynamic handling for current game
+    int diff_cap = 0; 
     
-    // Let's track the last key to support one level of nesting (parent.child)
+    // Nested property tracking
     char last_key[64] = {0};
     int last_indent = -1;
-
-    int diff_indent = -1;
+    
+    // Indent levels identification
+    int indent_game_root = 2; // "minesweeper:"
+    int indent_puzzles = -1;  // "puzzles:" inside game
+    int indent_diff_name = -1; // "easy:" inside puzzles
 
     while(fgets(line, sizeof(line), fh)) {
-        // Calculate indent
         int indent = 0;
         char* ptr = line;
         while(*ptr == ' ') { indent++; ptr++; }
@@ -90,105 +87,132 @@ game_config_t* load_config(const char* path) {
         char* trimmed = trim(ptr);
         if (strlen(trimmed) == 0 || trimmed[0] == '#') continue;
 
-        if (strncmp(trimmed, "config:", 7) == 0) {
-            in_config = 1;
-            in_create = 0;
-            continue;
+        // Level 0: "game:" - ignore, just context
+        if (strcmp(trimmed, "game:") == 0) continue;
+
+        char* colon = strchr(trimmed, ':');
+        char key[128] = {0};
+        char value[128] = {0};
+        
+        if (colon) {
+            *colon = '\0';
+            strncpy(key, trimmed, 127);
+            strncpy(value, trim(colon + 1), 127);
+        } else {
+             // Should not happen for valid yaml lines we care about
+             continue;
         }
 
-        if (strncmp(trimmed, "puzzles:", 8) == 0) {
-            in_create = 1;
-            in_config = 0;
-            diff_indent = -1; // Reset for new create block
+        // Level 2: Top level blocks under game
+        if (indent == indent_game_root) {
+            // Save previous difficulty if open
+            if (current_game && current_diff.name) {
+                if (current_game->difficulty_count >= (size_t)diff_cap) {
+                    diff_cap *= 2;
+                    current_game->difficulties = realloc(current_game->difficulties, diff_cap * sizeof(difficulty_config_t));
+                }
+                current_game->difficulties[current_game->difficulty_count++] = current_diff;
+                memset(&current_diff, 0, sizeof(difficulty_config_t));
+            }
+            
+            if (strcmp(key, "config") == 0) {
+                state_config = 1;
+                current_game = NULL; // Exit any game block
+            } else {
+                state_config = 0;
+                // Start new game
+                if (config->game_count >= (size_t)game_cap) {
+                    game_cap *= 2;
+                    config->games = realloc(config->games, game_cap * sizeof(local_game_config_t));
+                }
+                current_game = &config->games[config->game_count++];
+                // Initialize new game struct
+                memset(current_game, 0, sizeof(local_game_config_t));
+                current_game->game_name = strdup(key);
+                
+                // alloc difficultes
+                diff_cap = 4;
+                current_game->difficulties = calloc(diff_cap, sizeof(difficulty_config_t));
+            }
+            // Reset context
+            indent_puzzles = -1;
+            indent_diff_name = -1;
             continue;
         }
         
-        if (in_config) {
-             char* colon = strchr(trimmed, ':');
-             if (colon) {
-                *colon = '\0';
-                char* key = trim(trimmed);
-                char* value_str = trim(colon + 1);
-                if (strcmp(key, "threads") == 0) config->threads = atoi(value_str);
-                else if (strcmp(key, "output") == 0) config->output_file = strdup(value_str);
-                else if (strcmp(key, "append") == 0) {
-                    if (strcmp(value_str, "true") == 0) config->append = 1;
-                    else config->append = 0;
-                }
-             }
+        // Inside Config Block
+        if (state_config) {
+             if (strcmp(key, "threads") == 0) config->threads = atoi(value);
+             continue;
         }
         
-        if (in_create) {
-            char* colon = strchr(trimmed, ':');
-            if (colon) {
-                *colon = '\0';
-                char* key = trim(trimmed);
-                char* value_str = trim(colon + 1);
+        // Inside Game Block
+        if (current_game) {
+            // Check for "puzzles:"
+            if (strcmp(key, "puzzles") == 0 && strlen(value) == 0) {
+                indent_puzzles = indent;
+                continue;
+            }
+            
+            // Game properties (output, append) - usually indent 4 (same as puzzles)
+            if (indent_puzzles == -1 || indent == indent_puzzles) {
+                 if (strcmp(key, "output") == 0) current_game->output_file = strdup(value);
+                 else if (strcmp(key, "append") == 0) current_game->append = (strcmp(value, "true") == 0);
+                 continue;
+            }
+            
+            // Inside Puzzles
+            if (indent_puzzles != -1 && indent > indent_puzzles) {
+                // Difficulty Name (e.g. "easy:")
+                if (indent_diff_name == -1) indent_diff_name = indent;
                 
-                // Determine hierarchy level
-                if (diff_indent == -1) {
-                    // First item in create block, assume it defines the difficulty level indent
-                    diff_indent = indent;
-                }
-                
-                if (indent == diff_indent) {
-                    // This is a difficulty definition (e.g. "easy:")
-                    if (strlen(value_str) == 0) {
-                         // Save previous difficulty if it exists
-                        if (current_diff.name) {
-                             if (config->difficulty_count >= (size_t)diff_cap) {
-                                diff_cap *= 2;
-                                config->difficulties = realloc(config->difficulties, diff_cap * sizeof(difficulty_config_t));
-                            }
-                            config->difficulties[config->difficulty_count++] = current_diff;
-                            memset(&current_diff, 0, sizeof(difficulty_config_t));
+                if (indent == indent_diff_name) {
+                     // Save previous difficulty
+                    if (current_diff.name) {
+                        if (current_game->difficulty_count >= (size_t)diff_cap) {
+                            diff_cap *= 2;
+                            current_game->difficulties = realloc(current_game->difficulties, diff_cap * sizeof(difficulty_config_t));
                         }
-                        
-                        current_diff.name = strdup(key);
-                        last_key[0] = '\0'; // Reset parent context
+                        current_game->difficulties[current_game->difficulty_count++] = current_diff;
+                        memset(&current_diff, 0, sizeof(difficulty_config_t));
                     }
-                } else if (indent > diff_indent) {
-                    // Property of the current difficulty
-                    if (strlen(value_str) == 0) {
-                       // Nested block start (e.g. mines:)
-                       strncpy(last_key, key, 63);
-                       last_indent = indent;
-                    } else {
-                       // Leaf property
-                        if (strcmp(key, "count") == 0) current_diff.count = atoi(value_str);
-                        else {
-                            // Construct key
+                    current_diff.name = strdup(key);
+                    last_key[0] = '\0';
+                } 
+                // Difficulty Properties
+                else if (indent > indent_diff_name) {
+                     if (strlen(value) == 0) {
+                         // Nested start
+                         strncpy(last_key, key, 63);
+                         last_indent = indent;
+                     } else {
+                         // Leaf
+                         if (strcmp(key, "count") == 0) current_diff.count = atoi(value);
+                         else {
                             char full_key[128];
-                            // If this line is indented deeper than the last block start AND we have a last block
-                            // And the indent matches the expected nested property indent (usually last_indent + 2)
-                            // Let's be loose: if it's deeper than last_indent, it's a child of last_key
-                            if (indent > last_indent && strlen(last_key) > 0) {
+                             if (indent > last_indent && strlen(last_key) > 0) {
                                 snprintf(full_key, sizeof(full_key), "%s.%s", last_key, key);
                             } else {
-                                // If indent retreated (e.g. was 8, now 6), but still > diff_indent (4)
-                                // It's a direct property of diff
                                 strncpy(full_key, key, 127);
                             }
                             
-                            if (strcmp(full_key, "size.columns") == 0) add_property(&current_diff, "columns", value_str);
-                            else if (strcmp(full_key, "size.rows") == 0) add_property(&current_diff, "rows", value_str);
-                            else {
-                                add_property(&current_diff, full_key, value_str);
-                            }
-                        }
-                    }
+                            if (strcmp(full_key, "size.columns") == 0) add_property(&current_diff, "columns", value);
+                            else if (strcmp(full_key, "size.rows") == 0) add_property(&current_diff, "rows", value);
+                            else add_property(&current_diff, full_key, value);
+                         }
+                     }
                 }
             }
         }
     }
     
-    // Save last
-    if (current_diff.name) {
-         if (config->difficulty_count >= (size_t)diff_cap) {
+    // Save last diff
+    if (current_game && current_diff.name) {
+         if (current_game->difficulty_count >= (size_t)diff_cap) {
             diff_cap *= 2;
-            config->difficulties = realloc(config->difficulties, diff_cap * sizeof(difficulty_config_t));
+            current_game->difficulties = realloc(current_game->difficulties, diff_cap * sizeof(difficulty_config_t));
         }
-        config->difficulties[config->difficulty_count++] = current_diff;
+        current_game->difficulties[current_game->difficulty_count++] = current_diff;
     }
 
     fclose(fh);
@@ -197,15 +221,22 @@ game_config_t* load_config(const char* path) {
 
 void free_config(game_config_t* config) {
     if (!config) return;
-    for (size_t i = 0; i < config->difficulty_count; i++) {
-        free(config->difficulties[i].name);
-        for(size_t p=0; p<config->difficulties[i].property_count; p++) {
-            free(config->difficulties[i].properties[p].key);
-            free(config->difficulties[i].properties[p].value);
+    
+    for(size_t g=0; g<config->game_count; g++) {
+        local_game_config_t* game = &config->games[g];
+        if (game->game_name) free(game->game_name);
+        if (game->output_file) free(game->output_file);
+        
+        for (size_t i = 0; i < game->difficulty_count; i++) {
+            free(game->difficulties[i].name);
+            for(size_t p=0; p<game->difficulties[i].property_count; p++) {
+                free(game->difficulties[i].properties[p].key);
+                free(game->difficulties[i].properties[p].value);
+            }
+            if(game->difficulties[i].properties) free(game->difficulties[i].properties);
         }
-        if(config->difficulties[i].properties) free(config->difficulties[i].properties);
+        free(game->difficulties);
     }
-    free(config->difficulties);
-    if (config->output_file) free(config->output_file);
+    free(config->games);
     free(config);
 }
