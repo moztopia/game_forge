@@ -1,21 +1,21 @@
-CXX = g++
-CXXFLAGS = -Wall -Wextra -std=c++17
-LDFLAGS = 
+CC = gcc
+CFLAGS = -Wall -Wextra -std=c11 -D_POSIX_C_SOURCE=200809L
+LDFLAGS = -lm
 SRC_DIR = src
 OBJ_DIR = obj
 BIN_DIR = bin
 
-SRCS = $(wildcard $(SRC_DIR)/*.cpp)
-OBJS = $(patsubst $(SRC_DIR)/%.cpp, $(OBJ_DIR)/%.o, $(SRCS))
+SRCS = $(wildcard $(SRC_DIR)/*.c)
+OBJS = $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS))
 TARGET = $(BIN_DIR)/game_forge
 
 all: $(TARGET)
 
 $(TARGET): $(OBJS) | $(BIN_DIR)
-	$(CXX) $(LDFLAGS) -o $@ $^
+	$(CC) $(OBJS) -o $@ $(LDFLAGS)
 
-$(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c -o $@ $<
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(BIN_DIR) $(OBJ_DIR):
 	mkdir -p $@
@@ -23,7 +23,7 @@ $(BIN_DIR) $(OBJ_DIR):
 clean:
 	rm -rf $(OBJ_DIR) $(BIN_DIR)
 
-debug: CXXFLAGS += -g
+debug: CFLAGS += -g -DDEBUG
 debug: all
 
 .PHONY: all clean debug
